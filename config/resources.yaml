@@ -1,0 +1,90 @@
+map_fastq:
+  partition: long
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 16
+  jobname: map_fastq
+
+sam_to_bam:
+  partition: fast
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 16
+  jobname: sam_to_bam
+
+sort_bam:
+  partition: fast
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 8
+  jobname: sort_bam
+
+mark_duplicates:
+  partition: fast
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 16
+  jobname: mark_duplicates
+
+index_bam:
+  partition: fast
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 8
+  jobname: index_bam
+
+genome_coverage:
+  partition: fast
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 1
+  jobname: genome_coverage
+
+variant_calling_gvcf:
+  partition: fast
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 4
+  jobname: variant_calling_gvcf
+
+generate_sample_map:
+  partition: fast
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 1
+  jobname: generate_sample_map
+
+merge_gvcfs:
+  partition: long
+  memory: 250000
+  tasks: 1
+  cpu_tasks: 8
+  jobname: merge_gvcfs
+
+merge_vcfs:
+  partition: long
+  memory: 250000
+  tasks: 1
+  cpu_tasks: 8
+  jobname: merge_vcfs
+
+add_filter_vcf:
+  partition: long
+  memory: 250000
+  tasks: 1
+  cpu_tasks: 8
+  jobname: add_filter_vcf
+
+filter_vcf:
+  partition: long
+  memory: 250000
+  tasks: 1
+  cpu_tasks: 8
+  jobname: filter_vcf
+
+remove_rep_regions:
+  partition: long
+  memory: 250000
+  tasks: 1
+  cpu_tasks: 4
+  jobname: remove_rep_regions

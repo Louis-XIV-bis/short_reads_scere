@@ -1,0 +1,7 @@
+name: /shared/ifbstor1/projects/mps_chrom_cp_nb/env_python
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+  - r
+prefix: /shared/ifbstor1/projects/mps_chrom_cp_nb/env_python

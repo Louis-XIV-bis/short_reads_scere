@@ -1,0 +1,399 @@
+# Author: Louis OLLIVIER (louis.xiv.bis@gmail.com)
+# Date : March 2025 
+import os, yaml, json, pandas as pd
+
+configfile: "config/config.yaml"
+
+# Load the predefined resource requirments ("config/resources.yaml")
+with open("config/resources.yaml", "r") as f:
+    resources = yaml.safe_load(f)
+
+# Chromosome ID defined in the script (specie specific, check NCBI or one gvcf)
+CHROMOSOMES = config['chromosomes']
+
+# Generate all the possible combinations of contigs and strains for the output
+output_merge_chrom_vcf = [f"results/vcf/unfiltered_merged_strains_{chrom}.vcf.gz" for chrom in CHROMOSOMES]
+output_merge_chrom_vcf = [s.replace(" ", "") for s in output_merge_chrom_vcf]
+
+## Extract the sample ID to use throughout the pipeline ## 
+# List all files in the 'data/' directory, excluding hidden files
+files = [f for f in os.listdir('data/') if not f.startswith('.')]
+
+# Extract unique IDs from filenames before the first underscore or period
+ids = {filename.split('_')[0].split('.')[0] for filename in files}
+sample_id_list = sorted(ids)
+# print(sample_id_list)
+
+localrules:
+    all,
+
+# Rule to run all steps and keep necessary files
+rule all:
+    input:
+        expand("results/bam/{sample_id}_sorted_marked.bam", sample_id=sample_id_list),
+        expand("results/metrics/{sample_id}_MarkDup_metrics.txt", sample_id=sample_id_list),
+        expand("results/coverage/{sample_id}_genome_coverage.txt", sample_id=sample_id_list),
+        expand("results/gvcf/{sample_id}.g.vcf.gz", sample_id=sample_id_list),
+        "results/samples.map",
+        output_merge_chrom_vcf,
+        "results/vcf/unfiltered_yeast_strains.vcf.gz",
+        "results/vcf/filtered_yeast_strains.vcf.gz",
+        "results/vcf/filtered_repremoved_yeast_strains.vcf.gz",
+
+
+# Mapping: Align the reads to the reference genome 
+# Handles both paired-end and single-end FASTQ files
+rule map_fastq:
+    input:
+        lambda wildcards: (
+            ["data/" + wildcards.sample_id + ".fastq.gz"] 
+            if os.path.isfile("data/" + wildcards.sample_id + ".fastq.gz")
+            else [
+                "data/" + wildcards.sample_id + "_1.fastq.gz",
+                "data/" + wildcards.sample_id + "_2.fastq.gz"
+            ]
+        )
+    output:
+        "results/sam/{sample_id}.sam"
+    conda:
+        "envs/bwa.yaml"
+    params:
+        ref_genome=config["ref_genome"],
+        threads=resources["map_fastq"]["cpu_tasks"],
+        input_len=lambda wildcards, input: len(input),
+    threads: resources["map_fastq"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["map_fastq"]["partition"],
+        mem_mb=resources["map_fastq"]["memory"],
+        tasks=resources["map_fastq"]["tasks"],
+        cpus_per_task=resources["map_fastq"]["cpu_tasks"],
+        jobname=resources["map_fastq"]["jobname"]
+    log:
+        stdout="logs/map_fastq_{sample_id}.stdout",
+        stderr="logs/map_fastq_{sample_id}.stderr",
+    shell: 
+        """
+        READ_GROUP="@RG\\tID:{wildcards.sample_id}\\tSM:{wildcards.sample_id}\\tPL:ILLUMINA"
+        
+        if [ {params.input_len} -eq 1 ] || [ {params.input_len} -eq 2 ]; then
+            echo "Running: bwa mem {params.ref_genome} -t {params.threads} -R \"$READ_GROUP\" {input} > {output} 2> {log.stderr}"
+            bwa mem {params.ref_genome} -t {params.threads} -R "$READ_GROUP" {input} > {output} 2> {log.stderr}
+        else
+            echo "Unexpected number of input files for {wildcards.sample_id}. Expected 1 or 2, got {params.input_len}." >&2
+            exit 1
+        fi
+        """
+
+# Converts the SAM format alignment output to BAM format for efficient storage
+rule sam_to_bam:
+    input:
+        "results/sam/{sample_id}.sam"
+    output:
+        temp("results/bam/{sample_id}.bam")
+    conda:
+        "envs/samtools.yaml"
+    params:
+        threads=resources["sam_to_bam"]["cpu_tasks"]
+    threads: resources["sam_to_bam"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["sam_to_bam"]["partition"],
+        mem_mb=resources["sam_to_bam"]["memory"],
+        tasks=resources["sam_to_bam"]["tasks"],
+        cpus_per_task=resources["sam_to_bam"]["cpu_tasks"],
+        jobname=resources["sam_to_bam"]["jobname"],
+    log:
+        stdout="logs/sam_to_bam_{sample_id}.stdout",
+        stderr="logs/sam_to_bam_{sample_id}.stderr"
+    shell:
+        "samtools view -Sb -@ {params.threads} {input} -o {output} > {log.stdout} 2> {log.stderr}"
+
+# Sorts the BAM files to prepare for downstream processing
+rule sort_bam:
+    input:
+        "results/bam/{sample_id}.bam"
+    output:
+        "results/bam/{sample_id}_sorted.bam"
+    conda:
+        "envs/samtools.yaml"
+    params:
+        threads=resources["sort_bam"]["cpu_tasks"]
+    threads: resources["sort_bam"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["sort_bam"]["partition"],
+        mem_mb=resources["sort_bam"]["memory"],
+        tasks=resources["sort_bam"]["tasks"],
+        cpus_per_task=resources["sort_bam"]["cpu_tasks"],
+        jobname=resources["sort_bam"]["jobname"],
+    log:
+        stdout="logs/sort_bam_{sample_id}.stdout",
+        stderr="logs/sort_bam_{sample_id}.stderr"
+    shell:
+        "samtools sort -@ {params.threads} {input} -o {output} > {log.stdout} 2> {log.stderr}"
+
+
+# Identifies and marks duplicate reads in the sorted BAM files
+rule mark_duplicates:
+    input:
+        "results/bam/{sample_id}_sorted.bam",
+    output:
+        bam="results/bam/{sample_id}_sorted_marked.bam",
+        metrics="results/metrics/{sample_id}_MarkDup_metrics.txt",
+    conda:
+        "envs/gatk.yaml"
+    threads: resources["mark_duplicates"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["mark_duplicates"]["partition"],
+        mem_mb=resources["mark_duplicates"]["memory"],
+        tasks=resources["mark_duplicates"]["tasks"],
+        cpus_per_task=resources["mark_duplicates"]["cpu_tasks"],
+        jobname=resources["mark_duplicates"]["jobname"],
+    log:
+        stdout="logs/mark_duplicates_{sample_id}.stdout", stderr="logs/mark_duplicates_{sample_id}.stderr"
+    shell:
+        "gatk MarkDuplicatesSpark -I {input} -O {output.bam} \
+        -M {output.metrics} --create-output-bam-index > {log.stdout} 2> {log.stderr}"
+
+# Mark Duplicates: You run the MarkDuplicatesSpark tool on the sorted BAM file to identify and mark duplicate reads (= originate from the same original DNA fragment) 
+# This tool typically assigns a "duplicate" flag to the reads that are considered duplicates based on their positions and sequences.
+# Downstream Analysis: After marking duplicates, you can proceed to variant calling using a tool like GATK's HaplotypeCaller. 
+# Since the duplicates are marked, the variant caller will not count these reads multiple times, leading to more accurate variant detection.
+
+# Compute whole genome coverage
+rule genome_coverage:
+    input:
+        "results/bam/{sample_id}_sorted_marked.bam",
+    output:
+        "results/coverage/{sample_id}_genome_coverage.txt"
+    conda:
+        "envs/bcftools_bedtools_tabix.yaml"
+    threads: resources["genome_coverage"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["genome_coverage"]["partition"],
+        mem_mb=resources["genome_coverage"]["memory"],
+        tasks=resources["genome_coverage"]["tasks"],
+        cpus_per_task=resources["genome_coverage"]["cpu_tasks"],
+        jobname=resources["genome_coverage"]["jobname"],
+    log:
+        stdout="logs/genome_coverage_{sample_id}.stdout",
+        stderr="logs/genome_coverage_{sample_id}.stderr"
+    shell:
+        "bedtools genomecov -ibam {input} > {output} 2> {log.stderr}"
+
+# Variant calling for each genome, stored into per strain gVCF files using gatk HaplotypeCaller.
+rule variant_calling_gvcf:
+    input:
+        "results/bam/{sample_id}_sorted_marked.bam",
+    output:
+        "results/gvcf/{sample_id}.g.vcf.gz",
+    conda:
+        "envs/gatk.yaml"
+    params:
+        ref_genome=config["ref_genome"],
+    threads: resources["variant_calling_gvcf"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["variant_calling_gvcf"]["partition"],
+        mem_mb=resources["variant_calling_gvcf"]["memory"],
+        tasks=resources["variant_calling_gvcf"]["tasks"],
+        cpus_per_task=resources["variant_calling_gvcf"]["cpu_tasks"],
+        jobname=resources["variant_calling_gvcf"]["jobname"],
+    log:
+        stdout="logs/variant_calling_gvcf_{sample_id}.stdout", stderr="logs/variant_calling_gvcf_{sample_id}.stderr"
+    shell:
+        "gatk HaplotypeCaller -R {params.ref_genome} -I {input} -O {output} -ERC GVCF > {log.stdout} 2> {log.stderr}"
+
+
+# Create a "sample map" that is a tsv file of the sample name and the associated gvcf file path.
+rule generate_sample_map:
+    input:
+        expand("results/gvcf/{sample_id}.g.vcf.gz", sample_id=sample_id_list), 
+    output:
+        "results/samples.map", 
+    resources:
+        slurm_partition=resources["generate_sample_map"]["partition"],
+        mem_mb=resources["generate_sample_map"]["memory"],
+        tasks=resources["generate_sample_map"]["tasks"],
+        cpus_per_task=resources["generate_sample_map"]["cpu_tasks"],
+        jobname=resources["generate_sample_map"]["jobname"],
+    log:
+        stdout="logs/generate_sample_map.stdout",
+        stderr="logs/generate_sample_map.stderr",
+    run:
+        # Create a list of dictionaries with sample_id and input_file paths
+        sample_data = []
+        
+        for input_file in input:
+            # Clean up the input file path (strip spaces)
+            input_file = input_file.strip()
+            
+            # Extract the sample_id from the file path
+            sample_id = os.path.basename(input_file).removesuffix(".g.vcf.gz")
+            
+            # Add the sample_id and input_file to the list
+            sample_data.append({"sample_id": sample_id, "file_path": input_file})
+        
+        # Create a DataFrame from the list of sample data
+        df = pd.DataFrame(sample_data)
+        print(df)
+        # Save the DataFrame to a .tsv file (tab-separated values)
+        df.to_csv(output[0], sep='\t', index=False, header=False)
+
+# Create a genomic DB for each chromosome of all samples then use it 
+# to get the raw VCF per chromosome (for all samples)
+rule merge_gvcfs:
+    input:
+        "results/samples.map"
+    output:
+        "results/vcf/unfiltered_merged_strains_{chrom}.vcf.gz",
+    conda:
+        "envs/gatk.yaml"
+    params:
+        ref_genome=config["ref_genome"],
+        threads=resources["merge_gvcfs"]["cpu_tasks"],
+    threads: resources["merge_gvcfs"]["cpu_tasks"],
+    resources:
+        slurm_partition=resources["merge_gvcfs"]["partition"],
+        mem_mb=resources["merge_gvcfs"]["memory"],
+        tasks=resources["merge_gvcfs"]["tasks"],
+        cpus_per_task=resources["merge_gvcfs"]["cpu_tasks"],
+        jobname=resources["merge_gvcfs"]["jobname"],
+    log:
+        genomicsdb="logs/genomicsdb_{chrom}.log", 
+        genotypegvcfs="logs/genotypegvcfs_{chrom}.log",
+    shell:
+        '''
+        # Create the GenomicDBImport command for this chromosome
+        gatk --java-options "-Xmx220g -Xms220g" GenomicsDBImport \
+        --genomicsdb-workspace-path "results/chrom_DB_{wildcards.chrom}" \
+        --sample-name-map {input} \
+        --verbosity DEBUG \
+        --batch-size 100 \
+        --intervals "{wildcards.chrom}" \
+        --reference {params.ref_genome} \
+        --reader-threads {params.threads} \
+        --overwrite-existing-genomicsdb-workspace true \
+        > "{log.genomicsdb}" 2>&1 
+
+        # Use the GenomicDB to generate the final VCF (if needed)
+        gatk --java-options "-Xmx220g -Xms220g" GenotypeGVCFs \
+            -R {params.ref_genome} \
+            -V "gendb://results/chrom_DB_{wildcards.chrom}" \
+            -O "{output}" \
+            > "{log.genotypegvcfs}" 2>&1
+        '''
+
+# Merge all the per chromosome VCF into one unique VCF file 
+rule merge_vcfs:
+    input:
+        expand("results/vcf/unfiltered_merged_strains_{chrom}.vcf.gz", chrom=CHROMOSOMES)
+    output:
+        "results/vcf/unfiltered_yeast_strains.vcf.gz"
+    conda:
+        "envs/gatk.yaml"
+    params:
+        ref_genome=config["ref_genome"]
+    threads: resources["merge_vcfs"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["merge_vcfs"]["partition"],
+        mem_mb=resources["merge_vcfs"]["memory"],
+        tasks=resources["merge_vcfs"]["tasks"],
+        cpus_per_task=resources["merge_vcfs"]["cpu_tasks"],
+        jobname=resources["merge_vcfs"]["jobname"],
+    log:
+        stdout="logs/merge_vcfs.stdout",
+        stderr="logs/merge_vcfs.stderr"
+    shell:
+        '''
+        echo "{input}" | tr ' ' '\n' > tomerge.list ; \
+        gatk --java-options "-Xmx450g -Xms450g" MergeVcfs \
+        -O "{output}" \
+        -I tomerge.list \
+        > "{log.stdout}" 2> "{log.stderr}"; \
+        rm tomerge.list
+        '''
+        
+
+# Fill the filter column in the VCF: hard filtering based on previous tests (remove if TRUE)
+# Do not flag as pass if missing value except for the RankSum scores because they requiere 
+# heterozygous sites (if it's homozygous, can't compute these score but sites are still valid!)
+rule add_filter_vcf:
+    input:
+        "results/vcf/unfiltered_yeast_strains.vcf.gz"
+    output:
+        temp("results/vcf/addfilter_yeast_strains.vcf.gz"),
+    conda:
+        "envs/gatk.yaml"
+    params:
+        ref_genome=config["ref_genome"],
+    threads: resources["add_filter_vcf"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["add_filter_vcf"]["partition"],
+        mem_mb=resources["add_filter_vcf"]["memory"],
+        tasks=resources["add_filter_vcf"]["tasks"],
+        cpus_per_task=resources["add_filter_vcf"]["cpu_tasks"],
+        jobname=resources["add_filter_vcf"]["jobname"],
+    log:
+        stdout="logs/add_filter_vcf.stdout", stderr="logs/add_filter_vcf.stderr"
+    shell:
+        '''
+        gatk --java-options "-Xmx450g -Xms450g" VariantFiltration -R {params.ref_genome} \
+        -V {input} \
+        --filter-expression "QD < 2.0 || QD == '.'" --filter-name "QD2_missing" \
+        --filter-expression "SOR > 2.0 || SOR == '.'" --filter-name "SOR2_missing" \
+        --filter-expression "FS > 60.0 || FS == '.'" --filter-name "FS60_missing" \
+        --filter-expression "MQ < 50.0 || MQ == '.'" --filter-name "MQ50_missing" \
+        --filter-expression "MQRankSum < -10.0" --filter-name "MQRankSum-10" \
+        --filter-expression "ReadPosRankSum < -5.0" --filter-name "ReadPosRankSum-5" \
+        --filter-expression "ReadPosRankSum > 5.0" --filter-name "ReadPosRankSum5" \
+        --filter-expression "BaseQRankSum < -2.0" --filter-name "BaseQRankSum-2" \
+        -O {output} > {log.stdout} 2> {log.stderr}
+        '''
+
+# Remove the SNP that didn't pass the filter (based on the FILTER column)
+rule filter_vcf:
+    input:
+        "results/vcf/addfilter_yeast_strains.vcf.gz",
+    output:
+        "results/vcf/filtered_yeast_strains.vcf.gz",
+    conda:
+        "envs/bcftools_bedtools_tabix.yaml"
+    threads: resources["filter_vcf"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["filter_vcf"]["partition"],
+        mem_mb=resources["filter_vcf"]["memory"],
+        tasks=resources["filter_vcf"]["tasks"],
+        cpus_per_task=resources["filter_vcf"]["cpu_tasks"],
+        jobname=resources["filter_vcf"]["jobname"],
+    log:
+        stderr="logs/filter_vcf.stderr"
+    shell:
+        '''
+        bcftools view -f PASS -o {output} -Oz {input} 2> {log.stderr}; \
+        tabix -p vcf {output}
+        '''
+
+# Remove repeted regions from the genome (see resources/README.md) 
+# for more info about the input file
+rule remove_rep_regions:
+    input:
+        "results/vcf/filtered_yeast_strains.vcf.gz",
+    output:
+        "results/vcf/filtered_repremoved_yeast_strains.vcf.gz",
+    conda:
+        "envs/bcftools_bedtools_tabix.yaml"
+    params:
+        rep_regions=config["rep_regions"]
+    threads: resources["remove_rep_regions"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["remove_rep_regions"]["partition"],
+        mem_mb=resources["remove_rep_regions"]["memory"],
+        tasks=resources["remove_rep_regions"]["tasks"],
+        cpus_per_task=resources["remove_rep_regions"]["cpu_tasks"],
+        jobname=resources["remove_rep_regions"]["jobname"],
+    log:
+        stderr="logs/remove_rep_regions.stderr"
+    shell:
+        '''   
+        (bcftools view -h {input}; \
+        bedtools subtract -a {input} -b {params.rep_regions}) | bgzip -c > {output} 2> {log.stderr}; \
+        tabix -p vcf {output}
+        '''        
