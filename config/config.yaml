@@ -1,5 +1,7 @@
-ref_genome: 'resources/ref/S288C_reference_sequence_R64-4-1_20230830.fasta'
-rep_regions: 'resources/rep_regions/rep_regions_Scere.bed' 
+# For S288C ref
+ref_genome: 'resources/ref/ref_S288C/S288C_reference_sequence_R64-4-1_20230830.fasta'
+rep_regions: 'resources/rep_regions/rep_regions_Scere_S288C.bed' 
+
 
 chromosomes:
 - ref|NC_001136|
@@ -19,3 +21,27 @@ chromosomes:
 - ref|NC_001141|
 - ref|NC_001146|
 - ref|NC_001148|
+
+
+# # For YAG ref
+# ref_genome: 'resources/ref/ref_YAG/YAG142_wt_CANU.fasta'
+# rep_regions: 'resources/rep_regions/rep_regions_Scere_YAG.bed' 
+
+# chromosomes: 
+#  - chr_C01 
+#  - chr_C02
+#  - chr_C03
+#  - chr_C04
+#  - chr_C05
+#  - chr_C06
+#  - chr_C07
+#  - chr_C08
+#  - chr_C09
+#  - chr_C10
+#  - chr_C11
+#  - chr_C12
+#  - chr_C13
+#  - chr_C14
+#  - chr_C15
+#  - chr_C16
+#  - chr_Cmt

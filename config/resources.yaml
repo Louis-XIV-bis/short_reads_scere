@@ -21,7 +21,7 @@ sort_bam:
 
 mark_duplicates:
   partition: fast
-  memory: 10000
+  memory: 20000
   tasks: 1
   cpu_tasks: 16
   jobname: mark_duplicates
@@ -39,6 +39,13 @@ genome_coverage:
   tasks: 1
   cpu_tasks: 1
   jobname: genome_coverage
+
+plots_coverage:
+  partition: fast
+  memory: 10000
+  tasks: 1
+  cpu_tasks: 1
+  jobname: plots_coverage
 
 variant_calling_gvcf:
   partition: fast

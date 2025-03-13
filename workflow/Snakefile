@@ -32,7 +32,9 @@ rule all:
     input:
         expand("results/bam/{sample_id}_sorted_marked.bam", sample_id=sample_id_list),
         expand("results/metrics/{sample_id}_MarkDup_metrics.txt", sample_id=sample_id_list),
-        expand("results/coverage/{sample_id}_genome_coverage.txt", sample_id=sample_id_list),
+        expand("results/coverage/cov_{sample_id}.tsv", sample_id=sample_id_list),
+        expand("results/coverage/coverage_chr_{sample_id}.png", sample_id=sample_id_list),
+        expand("results/coverage/coverage_genome_{sample_id}.png", sample_id=sample_id_list),   
         expand("results/gvcf/{sample_id}.g.vcf.gz", sample_id=sample_id_list),
         "results/samples.map",
         output_merge_chrom_vcf,
@@ -41,7 +43,7 @@ rule all:
         "results/vcf/filtered_repremoved_yeast_strains.vcf.gz",
 
 
-# Mapping: Align the reads to the reference genome 
+# Align the reads to the reference genome (mapping) 
 # Handles both paired-end and single-end FASTQ files
 rule map_fastq:
     input:
@@ -150,20 +152,21 @@ rule mark_duplicates:
     log:
         stdout="logs/mark_duplicates_{sample_id}.stdout", stderr="logs/mark_duplicates_{sample_id}.stderr"
     shell:
-        "gatk MarkDuplicatesSpark -I {input} -O {output.bam} \
-        -M {output.metrics} --create-output-bam-index > {log.stdout} 2> {log.stderr}"
-
+        '''
+        gatk --java-options "-Xmx16g -Xms16g" MarkDuplicatesSpark -I {input} -O {output.bam} \
+        -M {output.metrics} --create-output-bam-index > {log.stdout} 2> {log.stderr}
+        '''
 # Mark Duplicates: You run the MarkDuplicatesSpark tool on the sorted BAM file to identify and mark duplicate reads (= originate from the same original DNA fragment) 
 # This tool typically assigns a "duplicate" flag to the reads that are considered duplicates based on their positions and sequences.
 # Downstream Analysis: After marking duplicates, you can proceed to variant calling using a tool like GATK's HaplotypeCaller. 
 # Since the duplicates are marked, the variant caller will not count these reads multiple times, leading to more accurate variant detection.
 
-# Compute whole genome coverage
+# Compute per base coverage and generate a coverage file for each genome 
 rule genome_coverage:
     input:
         "results/bam/{sample_id}_sorted_marked.bam",
     output:
-        "results/coverage/{sample_id}_genome_coverage.txt"
+        "results/coverage/cov_{sample_id}.tsv"
     conda:
         "envs/bcftools_bedtools_tabix.yaml"
     threads: resources["genome_coverage"]["cpu_tasks"]
@@ -177,7 +180,32 @@ rule genome_coverage:
         stdout="logs/genome_coverage_{sample_id}.stdout",
         stderr="logs/genome_coverage_{sample_id}.stderr"
     shell:
-        "bedtools genomecov -ibam {input} > {output} 2> {log.stderr}"
+        "bedtools genomecov -d -ibam {input} > {output} 2> {log.stderr}"
+
+# Compute coverage plot for each sample (1kb window)
+rule plots_coverage:
+    input:
+        "results/coverage/cov_{sample_id}.tsv",
+    output:
+        chr_cov="results/coverage/coverage_chr_{sample_id}.png",
+        wg_cov="results/coverage/coverage_genome_{sample_id}.png"
+    conda:
+        "envs/python.yaml"
+    threads: resources["plots_coverage"]["cpu_tasks"]
+    resources:
+        slurm_partition=resources["plots_coverage"]["partition"],
+        mem_mb=resources["plots_coverage"]["memory"],
+        tasks=resources["plots_coverage"]["tasks"],
+        cpus_per_task=resources["plots_coverage"]["cpu_tasks"],
+        jobname=resources["plots_coverage"]["jobname"],
+    log:
+        stdout="logs/plots_coverage_{sample_id}.stdout",
+        stderr="logs/plots_coverage_{sample_id}.stderr"
+    shell:
+        """
+        python workflow/scripts/plot_coverage_chr.py {input} {output.chr_cov} 2> {log.stderr} 
+        && python workflow/scripts/plot_coverage_genome.py {input} {output.wg_cov} 2>> {log.stderr}"
+        """
 
 # Variant calling for each genome, stored into per strain gVCF files using gatk HaplotypeCaller.
 rule variant_calling_gvcf:
@@ -233,8 +261,6 @@ rule generate_sample_map:
         
         # Create a DataFrame from the list of sample data
         df = pd.DataFrame(sample_data)
-        print(df)
-        # Save the DataFrame to a .tsv file (tab-separated values)
         df.to_csv(output[0], sep='\t', index=False, header=False)
 
 # Create a genomic DB for each chromosome of all samples then use it 
@@ -311,7 +337,6 @@ rule merge_vcfs:
         rm tomerge.list
         '''
         
-
 # Fill the filter column in the VCF: hard filtering based on previous tests (remove if TRUE)
 # Do not flag as pass if missing value except for the RankSum scores because they requiere 
 # heterozygous sites (if it's homozygous, can't compute these score but sites are still valid!)

@@ -4,7 +4,7 @@
 ref_dir='/home/lollivier/Documents/pipeline/resources/ref' # your path
 cd $ref_dir
 
-ref_name='R64-4-1_20230830'
+ref_name='R64-4-1_20230830' # ref name for the files
 
 ref_g="S288C_reference_genome_${ref_name}" 
 ref_s="S288C_reference_sequence_${ref_name}"
